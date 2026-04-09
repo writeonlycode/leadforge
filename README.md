@@ -244,6 +244,14 @@ target/release/leadforge
 
 ---
 
+## Install via Cargo
+
+```bash
+cargo install leadforge
+```
+
+---
+
 # Why Rust?
 
 Rust allows `leadforge` to combine:
