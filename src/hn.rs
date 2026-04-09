@@ -1,3 +1,111 @@
+//! # Hacker News Source
+//!
+//! This module implements the **Hacker News ingestion pipeline** for `leadforge`.
+//!
+//! It fetches job postings from the official Hacker News API and processes them
+//! using a **streaming, concurrent pipeline with retry logic and filtering**.
+//!
+//! ---
+//!
+//! ## Pipeline Overview
+//!
+//! The core execution flow in [`fetch_jobs`] looks like this:
+//!
+//! ```text
+//! fetch max item id  ─┐
+//!                     ├─→ build ID stream
+//! fetch job stories ──┘
+//!                         ↓
+//!                   stream::iter(ids)
+//!                         ↓
+//!               async fetch (concurrent)
+//!                         ↓
+//!               retry + backoff logic
+//!                         ↓
+//!                 filter_map (Job only)
+//!                         ↓
+//!                 keyword filtering
+//!                         ↓
+//!                     take(limit)
+//!                         ↓
+//!                     collect()
+//! ```
+//!
+//! ---
+//!
+//! ## Data Strategy
+//!
+//! The Hacker News API provides:
+//!
+//! - `/maxitem` → latest item ID
+//! - `/jobstories` → curated list of job IDs
+//!
+//! To maximize coverage, this module:
+//!
+//! 1. Uses `jobstories` as a high-signal dataset
+//! 2. Falls back to scanning recent IDs from `maxitem`
+//! 3. Merges both into a single descending stream
+//!
+//! This hybrid approach improves recall while maintaining efficiency.
+//!
+//! ---
+//!
+//! ## Concurrency Model
+//!
+//! Concurrency is controlled via:
+//!
+//! ```text
+//! stream::iter(ids)
+//!     .map(fetch)
+//!     .buffer_unordered(N)
+//! ```
+//!
+//! Where `N = max_concurrency`.
+//!
+//! This ensures:
+//!
+//! - high throughput
+//! - bounded resource usage
+//! - no thread explosion
+//!
+//! ---
+//!
+//! ## Retry Strategy
+//!
+//! Each request is retried with **exponential backoff + jitter**:
+//!
+//! ```text
+//! delay = (base * 2^retries + jitter).min(max_delay)
+//! ```
+//!
+//! Retry is only attempted for **transient errors**, such as:
+//!
+//! - timeouts
+//! - connection failures
+//! - 5xx server errors
+//! - rate limiting (429)
+//!
+//! ---
+//!
+//! ## Filtering
+//!
+//! Filtering is applied *inside the stream*, not after collection.
+//!
+//! This means:
+//!
+//! - fewer allocations
+//! - less work overall
+//! - early discard of irrelevant data
+//!
+//! ---
+//!
+//! ## Design Goals
+//!
+//! - **Efficiency** → streaming + concurrency
+//! - **Resilience** → retries + timeouts
+//! - **Scalability** → large ID ranges
+//! - **Composability** → reusable async functions
+
 use futures::{
     StreamExt,
     future::{self, join},
@@ -9,24 +117,40 @@ use std::time::Duration;
 
 use crate::LeadForgeError;
 
+/// Wrapper for the `/jobstories` endpoint response.
+///
+/// Contains a list of Hacker News item IDs representing job postings.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HackerNewsJobStories(Vec<u64>);
 
+/// Wrapper for the `/maxitem` endpoint response.
+///
+/// Represents the latest item ID in the Hacker News dataset.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HackerNewsMaxItemId(u64);
 
 const HN_JOBSTORIES_URL: &str = "https://hacker-news.firebaseio.com/v0/jobstories.json";
 const HN_MAXITEM_URL: &str = "https://hacker-news.firebaseio.com/v0/maxitem.json";
 
+/// Represents a generic Hacker News item.
+///
+/// The API returns different item types (`job`, `story`, `comment`, etc.).
+/// We only care about `job`, and ignore everything else.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HackerNewsItem {
+    /// A job posting.
     Job(HackerNewsJob),
 
+    /// Any non-job item.
     #[serde(other)]
     Other,
 }
 
+/// Represents a Hacker News job posting.
+///
+/// Fields are optional because the API does not guarantee
+/// that all fields are present for every item.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HackerNewsJob {
     pub id: u64,
@@ -38,6 +162,41 @@ pub struct HackerNewsJob {
     pub text: Option<String>,
 }
 
+/// Fetches job postings from Hacker News using a concurrent streaming pipeline.
+///
+/// # Parameters
+///
+/// - `limit` → maximum number of results to return
+/// - `max_concurrency` → number of concurrent HTTP requests
+/// - `max_retries` → retry attempts per request
+/// - `timeout` → per-request timeout
+/// - `keyword` → optional case-insensitive filter on job titles
+///
+/// # Behavior
+///
+/// - Fetches job IDs from `/jobstories`
+/// - Expands coverage using `/maxitem`
+/// - Streams IDs in reverse order (newest first)
+/// - Fetches items concurrently
+/// - Retries transient failures
+/// - Filters only job postings
+/// - Applies keyword filtering
+/// - Stops after `limit` results
+///
+/// # Errors
+///
+/// Returns [`LeadForgeError`] if:
+///
+/// - API requests fail and retries are exhausted
+/// - network issues occur
+///
+/// # Performance
+///
+/// This function is optimized for:
+///
+/// - high throughput (via concurrency)
+/// - low memory usage (streaming)
+/// - early termination (`take(limit)`)
 pub async fn fetch_jobs(
     limit: usize,
     max_concurrency: usize,
@@ -81,6 +240,24 @@ pub async fn fetch_jobs(
     Ok(result)
 }
 
+/// Fetches a single item with retry logic.
+///
+/// Retries are performed using exponential backoff with jitter,
+/// and only for retryable errors.
+///
+/// # Parameters
+///
+/// - `client` → shared HTTP client
+/// - `timeout` → per-request timeout
+/// - `max_retries` → maximum retry attempts
+/// - `job_id` → Hacker News item ID
+///
+/// # Errors
+///
+/// Returns an error if:
+///
+/// - retries are exhausted
+/// - a non-retryable error occurs
 pub async fn fetch_job_with_retry(
     client: &reqwest::Client,
     timeout: Duration,
@@ -111,6 +288,9 @@ pub async fn fetch_job_with_retry(
     }
 }
 
+/// Fetches the latest item ID from Hacker News.
+///
+/// Used as a fallback to scan recent items.
 pub async fn fetch_max_item_id(
     client: &reqwest::Client,
 ) -> Result<HackerNewsMaxItemId, LeadForgeError> {
@@ -123,6 +303,7 @@ pub async fn fetch_max_item_id(
         .await?)
 }
 
+/// Fetches curated job story IDs from Hacker News.
 pub async fn fetch_job_stories(
     client: &reqwest::Client,
 ) -> Result<HackerNewsJobStories, LeadForgeError> {
@@ -137,6 +318,9 @@ pub async fn fetch_job_stories(
     Ok(ids)
 }
 
+/// Fetches a single Hacker News item.
+///
+/// Applies a per-request timeout and parses the response into [`HackerNewsItem`].
 pub async fn fetch_job(
     client: &reqwest::Client,
     timeout: Duration,
@@ -157,6 +341,13 @@ pub async fn fetch_job(
     Ok(result)
 }
 
+/// Filters job titles based on an optional keyword.
+///
+/// # Behavior
+///
+/// - If no keyword is provided → always returns `true`
+/// - If title is missing → returns `false`
+/// - Otherwise → performs case-insensitive substring match
 pub fn filter(title: Option<&str>, keyword: Option<&str>) -> bool {
     if keyword.is_none() {
         return true;

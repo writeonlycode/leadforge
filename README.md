@@ -104,10 +104,13 @@ Example output:
 ```json
 [
   {
-    "id": 123456,
-    "title": "Senior Rust Engineer",
-    "url": "https://example.com/job",
-    "time": 1710000000
+    "id": 47251163,
+    "by": "yeldarb",
+    "score": 1,
+    "time": 1772646584,
+    "title": "Roboflow (YC S20) Is Hiring a Security Engineer for AI Infra",
+    "url": "https://roboflow.com/careers",
+    "text": null
   }
 ]
 ```

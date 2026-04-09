@@ -10,10 +10,10 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/writeonlycode/leadforge"
 homepage = "https://github.com/writeonlycode/leadforge"
-documentation = "https://docs.rs/leadgen"
+documentation = "https://docs.rs/leadforge"
 
 keywords = ["cli", "async", "scraper", "hacker-news", "lead-generation"]
-categories = ["command-line-utilities", "web-programming::http-client"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "leadforge"
