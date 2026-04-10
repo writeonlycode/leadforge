@@ -1,6 +1,5 @@
 # LeadForge
 
-![CI](https://github.com/writeonlycode/leadforge/actions/workflows/ci.yml/badge.svg)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![CLI](https://img.shields.io/badge/type-CLI-blue)
