@@ -119,7 +119,17 @@
 //! Example:
 //!
 //! ```json
-//! [{"id":123,"title":"Rust Developer","url":"https://..."}]
+//! [
+//!   {
+//!     "id": 47251163,
+//!     "by": "yeldarb",
+//!     "score": 1,
+//!     "time": 1772646584,
+//!     "title": "Roboflow (YC S20) Is Hiring a Security Engineer for AI Infra",
+//!     "url": "https://roboflow.com/careers",
+//!     "text": null
+//!   }
+//! ]
 //! ```
 //!
 //! ---
@@ -143,12 +153,6 @@
 //! - data pipelines
 //! - lead generation workflows
 //!
-//! ---
-//!
-//! ## Library vs CLI
-//!
-//! The CLI is a thin wrapper around the core [`run`] function. If you need more control, you can
-//! use the library directly.
 
 use std::time::Duration;
 use thiserror::Error;
